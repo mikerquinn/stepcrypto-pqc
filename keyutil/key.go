@@ -382,7 +382,7 @@ func generateMLKEMSigner(crv string) (crypto.Signer, error) {
 	}
 }
 
-// ML-KEM OID per NIST (1.3.6.1.4.1.18284 = 44638 in base-128 encoding)
+// ML-KEM OID per NIST (1.3.6.1.4.1.18284)
 var (
 	mlkem768OID   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 18284, 2, 1, 1}
 	mlkem1024OID  = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 18284, 2, 2, 1}
@@ -504,15 +504,16 @@ func ParsePKCS8PrivateKey(data []byte) (crypto.PrivateKey, error) {
 		return nil, errors.New("empty data")
 	}
 
-	// ML-KEM-768 OID: 1.3.6.1.4.1.18284.2.1.1 = 2b 06 01 04 01 82 dc 5e 02 01 01
-	// ML-KEM-1024 OID: 1.3.6.1.4.1.18284.2.2.1 = 2b 06 01 04 01 82 dc 5e 02 02 01
+	// ML-KEM-768 OID: 1.3.6.1.4.1.18284.2.1.1 = 2b 06 01 04 01 81 8e 6c 02 01 01
+	// ML-KEM-1024 OID: 1.3.6.1.4.1.18284.2.2.1 = 2b 06 01 04 01 81 8e 6c 02 02 01
+	// Enterprise number 18284 = base-128 [1,14,108] = 0x81 0x8e 0x6c
 	var detectedCurve string
 
 	// Search for ML-KEM OID in the data
 	for i := 5; i <= len(data)-13; i++ {
 		if data[i] == 0x06 && data[i+1] == 0x0b { // tag=06, length=11
 			// Check for ML-KEM-1024 OID first (more specific)
-			mldkem1024OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xdc, 0x5e, 0x02, 0x02, 0x01}
+			mldkem1024OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x81, 0x8e, 0x6c, 0x02, 0x02, 0x01}
 			match := true
 			for j := 0; j < 11; j++ {
 				if data[i+2+j] != mldkem1024OID[j] {
@@ -526,7 +527,7 @@ func ParsePKCS8PrivateKey(data []byte) (crypto.PrivateKey, error) {
 			}
 
 			// Check for ML-KEM-768 OID
-			mldkem768OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xdc, 0x5e, 0x02, 0x01, 0x01}
+			mldkem768OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x81, 0x8e, 0x6c, 0x02, 0x01, 0x01}
 			match = true
 			for j := 0; j < 11; j++ {
 				if data[i+2+j] != mldkem768OID[j] {
@@ -619,9 +620,8 @@ func ParsePKIXPublicKey(data []byte) (crypto.PublicKey, error) {
 		return pubKey, nil
 	}
 
-	// Check for ML-KEM-1024 OID: 1.3.6.1.4.1.44638.2.2.1
-	mldkem1024OID := asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 44638, 2, 2, 1}
-	if spkiData.AlgorithmIdentifier.Algorithm.Equal(mldkem1024OID) {
+	// Check for ML-KEM-1024 OID: 1.3.6.1.4.1.18284.2.2.1
+	if spkiData.AlgorithmIdentifier.Algorithm.Equal(mlkem1024OID) {
 		var pubKey pkixMLKEM1024PublicKey
 		if _, err := asn1.Unmarshal(data, &pubKey); err == nil {
 			key, err := mlkem.NewEncapsulationKey1024(pubKey.SubjectPublicKey.Bytes)
