@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // RFC 7515 - X.509 Certificate SHA-1 Thumbprint
 	"crypto/x509"
@@ -163,6 +164,12 @@ func validateSigJWK(jwk *JSONWebKey) error {
 			return nil
 		}
 		errctx = "kty 'OKP' and crv 'Ed25519'"
+	case *mldsa.PrivateKey, *mldsa.PublicKey:
+		switch jwk.Algorithm {
+		case "MLDSA-44", "MLDSA-65", "MLDSA-87":
+			return nil
+		}
+		errctx = "kty 'ML-DSA'"
 	case OpaqueSigner:
 		for _, alg := range k.Algs() {
 			if jwk.Algorithm == string(alg) {

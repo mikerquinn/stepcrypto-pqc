@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
@@ -355,6 +356,8 @@ func guessJWKAlgorithm(ctx *context, jwk *JSONWebKey) {
 			jwk.Algorithm = EdDSA
 		case x25519.PrivateKey, x25519.PublicKey:
 			jwk.Algorithm = XEdDSA
+		case *mldsa.PrivateKey, *mldsa.PublicKey:
+			jwk.Algorithm = getMLDSAAlgorithm(k)
 		}
 	}
 }
@@ -365,6 +368,8 @@ func guessOpaqueSigner(key crypto.PrivateKey) crypto.PrivateKey {
 		return key
 	case x25519.PrivateKey:
 		return X25519Signer(k)
+	case *mldsa.PrivateKey:
+		return k
 	case crypto.Signer:
 		return NewOpaqueSigner(k)
 	default:
@@ -385,6 +390,8 @@ func guessSignatureAlgorithm(key crypto.PrivateKey) SignatureAlgorithm {
 		return EdDSA
 	case x25519.PrivateKey, X25519Signer:
 		return XEdDSA
+	case *mldsa.PrivateKey:
+		return SignatureAlgorithm(getMLDSAAlgorithm(k))
 	case crypto.Signer:
 		return guessSignatureAlgorithmFromPublicKey(k.Public())
 	case OpaqueSigner:
@@ -408,6 +415,8 @@ func guessSignatureAlgorithmFromPublicKey(key crypto.PublicKey) SignatureAlgorit
 		return EdDSA
 	case x25519.PublicKey:
 		return XEdDSA
+	case *mldsa.PublicKey:
+		return SignatureAlgorithm(getMLDSAAlgorithm(k))
 	default:
 		return ""
 	}
@@ -426,8 +435,31 @@ func guessKnownJWKAlgorithm(_ *context, jwk *JSONWebKey) {
 			jwk.Algorithm = EdDSA
 		case x25519.PrivateKey, x25519.PublicKey:
 			jwk.Algorithm = XEdDSA
+		case *mldsa.PrivateKey, *mldsa.PublicKey:
+			jwk.Algorithm = getMLDSAAlgorithm(k)
 		}
 	}
+}
+
+func getMLDSAAlgorithm(k crypto.PrivateKey) string {
+	switch v := k.(type) {
+	case *mldsa.PrivateKey:
+		pubKey := v.Public()
+		if pk, ok := pubKey.(*mldsa.PublicKey); ok {
+			params := pk.Parameters()
+			switch {
+			case params == mldsa.MLDSA44():
+				return "MLDSA-44"
+			case params == mldsa.MLDSA65():
+				return "MLDSA-65"
+			case params == mldsa.MLDSA87():
+				return "MLDSA-87"
+			default:
+				return ""
+			}
+		}
+	}
+	return ""
 }
 
 // getECAlgorithm returns the JWA algorithm name for the given elliptic curve.

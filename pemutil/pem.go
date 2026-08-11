@@ -9,6 +9,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -626,6 +627,26 @@ func Serialize(in interface{}, opts ...Options) (*pem.Block, error) {
 				Type:  "PRIVATE KEY",
 				Bytes: b,
 			}
+		}
+	case *mldsa.PrivateKey:
+		isPrivateKey = true
+		ctx.pkcs8 = true
+		b, err := x509.MarshalPKCS8PrivateKey(k)
+		if err != nil {
+			return nil, err
+		}
+		p = &pem.Block{
+			Type:  "PRIVATE KEY",
+			Bytes: b,
+		}
+	case *mldsa.PublicKey:
+		b, err := x509.MarshalPKIXPublicKey(k)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		p = &pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: b,
 		}
 	case *x509.Certificate:
 		p = &pem.Block{

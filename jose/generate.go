@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
@@ -137,6 +138,16 @@ func GenerateJWKFromPEM(filename string, subtle bool) (*JSONWebKey, error) {
 			Key:       key,
 			Algorithm: algForKey(key),
 		}, nil
+	case *mldsa.PrivateKey:
+		return &JSONWebKey{
+			Key:       key,
+			Algorithm: algForKey(key.Public()),
+		}, nil
+	case *mldsa.PublicKey:
+		return &JSONWebKey{
+			Key:       key,
+			Algorithm: algForKey(key),
+		}, nil
 	case *x509.Certificate:
 		var use string
 		if !subtle {
@@ -164,6 +175,18 @@ func algForKey(key crypto.PublicKey) string {
 		return getECAlgorithm(key.Curve)
 	case ed25519.PrivateKey, ed25519.PublicKey:
 		return EdDSA
+	case *mldsa.PublicKey:
+		params := key.Parameters()
+		switch {
+		case params == mldsa.MLDSA44():
+			return "MLDSA-44"
+		case params == mldsa.MLDSA65():
+			return "MLDSA-65"
+		case params == mldsa.MLDSA87():
+			return "MLDSA-87"
+		default:
+			return ""
+		}
 	default:
 		return ""
 	}

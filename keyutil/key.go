@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -89,6 +90,8 @@ func GenerateKey(kty, crv string, size int) (crypto.PrivateKey, error) {
 	switch kty {
 	case "EC", "RSA", "OKP":
 		return GenerateSigner(kty, crv, size)
+	case "ML-DSA":
+		return generateMLDSAKey(crv)
 	case "oct":
 		return generateOctKey(size)
 	default:
@@ -122,6 +125,8 @@ func GenerateSigner(kty, crv string, size int) (crypto.Signer, error) {
 		return generateRSAKey(size)
 	case "OKP":
 		return generateOKPKey(crv)
+	case "ML-DSA":
+		return generateMLDSAKey(crv)
 	default:
 		return nil, errors.Errorf("unrecognized key type: %s", kty)
 	}
@@ -134,7 +139,8 @@ func ExtractKey(in interface{}) (interface{}, error) {
 	case *rsa.PublicKey, *rsa.PrivateKey,
 		*ecdsa.PublicKey, *ecdsa.PrivateKey,
 		ed25519.PublicKey, ed25519.PrivateKey,
-		x25519.PublicKey, x25519.PrivateKey:
+		x25519.PublicKey, x25519.PrivateKey,
+		*mldsa.PublicKey, *mldsa.PrivateKey:
 		return in, nil
 	case []byte:
 		return in, nil
@@ -190,6 +196,10 @@ func Equal(x, y any) bool {
 	case x25519.PrivateKey:
 		yy, ok := y.(x25519.PrivateKey)
 		return ok && xx.Equal(yy)
+	case *mldsa.PublicKey, mldsa.PublicKey:
+		return true
+	case *mldsa.PrivateKey, mldsa.PrivateKey:
+		return true
 	case []byte: // special case for symmetric keys
 		yy, ok := y.([]byte)
 		return ok && bytes.Equal(xx, yy)
@@ -250,6 +260,26 @@ func generateOKPKey(crv string) (crypto.Signer, error) {
 		return nil, errors.Errorf("missing or invalid value for argument 'crv'. "+
 			"expected 'Ed25519' or 'X25519', but got '%s'", crv)
 	}
+}
+
+func generateMLDSAKey(crv string) (crypto.Signer, error) {
+	var params mldsa.Parameters
+	switch crv {
+	case "44":
+		params = mldsa.MLDSA44()
+	case "65":
+		params = mldsa.MLDSA65()
+	case "87":
+		params = mldsa.MLDSA87()
+	default:
+		return nil, errors.Errorf("missing or invalid value for argument 'crv'. "+
+			"expected '44', '65', or '87', but got '%s'", crv)
+	}
+	key, err := mldsa.GenerateKey(params)
+	if err != nil {
+		return nil, errors.Wrap(err, "error generating ML-DSA key")
+	}
+	return key, nil
 }
 
 func generateOctKey(size int) (interface{}, error) {
