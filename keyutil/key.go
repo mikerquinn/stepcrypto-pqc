@@ -529,9 +529,10 @@ func ParsePKCS8PrivateKey(data []byte) (crypto.PrivateKey, error) {
 		}
 	}
 
-	// Check for ML-KEM-1024 OID: 1.3.6.1.4.1.44638.2.2.1 (bytes: 2b 06 01 04 01 82 da c6 02 02 01)
+	// Check for ML-KEM-1024 OID: 1.3.6.1.4.1.44638.2.2.1 (bytes: 2b 06 01 04 01 82 dc 5e 02 02 01)
 	// The OID is typically at offset 13 in the PKCS#8 structure (after outer SEQUENCE, version, algo SEQUENCE)
 	// Search for the OID with tag=06, len=0b pattern
+	mldkem1024OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xdc, 0x5e, 0x02, 0x02, 0x01}
 	for i := 5; i <= len(data)-13; i++ {
 		if data[i] == 0x06 && data[i+1] == 0x0b {
 			match := true
