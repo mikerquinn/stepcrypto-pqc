@@ -445,46 +445,69 @@ func MarshalPKIXPublicKeyMLKEM1024(pub *mlkem.EncapsulationKey1024) ([]byte, err
 	return asn1.Marshal(pubKey)
 }
 
-// MarshalPKCS8PrivateKey marshals an ML-KEM private key in PKCS#8 format
+// MarshalPKCS8PrivateKey marshals an ML-KEM-768 private key in PKCS#8 format.
+// The structure matches ML-KEM-1024: public key inside AlgorithmIdentifier,
+// private key at outer level.
 func MarshalPKCS8PrivateKey(priv *mlkem.DecapsulationKey768) ([]byte, error) {
-	// PKCS#8 PrivateKeyInfo structure per RFC 5958
-	type privKeyInfo struct {
-		Version              int
-		PrivateKeyAlgorithm  pkixAlgID
-		PrivateKey           asn1.BitString
-	}
+	pub := priv.EncapsulationKey()
+	pubKeyBytes := pub.Bytes()
+	privKeyBytes := priv.Bytes()
 
-	keyBytes := priv.Bytes()
-
-	info := privKeyInfo{
+	privKey := mlkemPKCS8PrivateKey{
 		Version: 0,
-		PrivateKeyAlgorithm: pkixAlgID{
-			Algorithm:  mlkem768OID,
-			Parameters: asn1.RawValue{},
+		AlgorithmIdentifier: struct {
+			Algorithm  struct {
+				Algorithm  asn1.ObjectIdentifier
+				Parameters asn1.RawValue
+			}
+			PrivateKey asn1.BitString
+		}{
+			Algorithm: struct {
+				Algorithm  asn1.ObjectIdentifier
+				Parameters asn1.RawValue
+			}{
+				Algorithm:  mlkem768OID,
+				Parameters: asn1.RawValue{Tag: 5}, // NULL
+			},
+			PrivateKey: asn1.BitString{Bytes: pubKeyBytes, BitLength: len(pubKeyBytes) * 8},
 		},
-		PrivateKey: asn1.BitString{Bytes: keyBytes, BitLength: len(keyBytes) * 8},
 	}
-
-	return asn1.Marshal(info)
+	privKey.PublicKey = asn1.BitString{Bytes: privKeyBytes, BitLength: len(privKeyBytes) * 8}
+	return asn1.Marshal(privKey)
 }
 
-// MarshalPKCS8PrivateKeyMLKEM1024 marshals an ML-KEM-1024 private key in PKCS#8 format
+// MarshalPKCS8PrivateKeyMLKEM1024 marshals an ML-KEM-1024 private key in PKCS#8 format.
+// The structure is:
+//
+//	SEQUENCE { version, AlgorithmIdentifier { Algorithm, publicKey }, privateKey }
 func MarshalPKCS8PrivateKeyMLKEM1024(priv *mlkem.DecapsulationKey1024) ([]byte, error) {
 	pub := priv.EncapsulationKey()
 	pubKeyBytes := pub.Bytes()
 	privKeyBytes := priv.Bytes()
-	algID := pkixAlgID1024{
-		Algorithm:  mlkem1024OID,
-		Parameters: asn1.RawValue{},
-	}
-	privKey := pkixMLKEM1024PrivateKey{
+
+	// Use the same structure as ParsePKCS8PrivateKey expects
+	privKey := mlkemPKCS8PrivateKey{
 		Version: 0,
-		PublicKey: pkixMLKEM1024PublicKey{
-			Algorithm:        algID,
-			SubjectPublicKey: asn1.BitString{Bytes: pubKeyBytes, BitLength: len(pubKeyBytes) * 8},
+		AlgorithmIdentifier: struct {
+			Algorithm  struct {
+				Algorithm  asn1.ObjectIdentifier
+				Parameters asn1.RawValue
+			}
+			PrivateKey asn1.BitString
+		}{
+			Algorithm: struct {
+				Algorithm  asn1.ObjectIdentifier
+				Parameters asn1.RawValue
+			}{
+				Algorithm:  mlkem1024OID,
+				Parameters: asn1.RawValue{Tag: 5}, // NULL
+			},
+			// The BIT STRING inside AlgorithmIdentifier is the encapsulation (public) key
+			PrivateKey: asn1.BitString{Bytes: pubKeyBytes, BitLength: len(pubKeyBytes) * 8},
 		},
-		PrivKey: asn1.BitString{Bytes: privKeyBytes, BitLength: len(privKeyBytes) * 8},
 	}
+	// Add the decapsulation (private) key at the outer level
+	privKey.PublicKey = asn1.BitString{Bytes: privKeyBytes, BitLength: len(privKeyBytes) * 8}
 	return asn1.Marshal(privKey)
 }
 
@@ -554,21 +577,27 @@ func ParsePKCS8PrivateKey(data []byte) (crypto.PrivateKey, error) {
 	return priv, errors.Wrap(err, "error parsing PKCS#8 private key")
 }
 
-// ML-KEM PKCS#8 structure per RFC 5958:
+// ML-KEM PKCS#8 structure:
 //
-//	PrivateKeyInfo ::= SEQUENCE {
-//	    version                   INTEGER,
+//	SEQUENCE {
+//	    version                   INTEGER (0),
 //	    privateKeyAlgorithm       AlgorithmIdentifier,
 //	    privateKey                BIT STRING,
 //	    publicKey                 [0] BIT STRING OPTIONAL
 //	}
 //
-// Where AlgorithmIdentifier contains the Algorithm SEQUENCE with OID+params.
+// Where AlgorithmIdentifier is:
+//	SEQUENCE { Algorithm SEQUENCE { OID, NULL }, privateKey BIT STRING }
 type mlkemPKCS8PrivateKey struct {
 	Version           int
-	AlgorithmIdentifier pkixAlgID
-	PrivateKey        asn1.BitString
-	PublicKey         asn1.BitString `asn1:"optional,explicit,tag:0"`
+	AlgorithmIdentifier struct {
+		Algorithm  struct {
+			Algorithm  asn1.ObjectIdentifier
+			Parameters asn1.RawValue
+		}
+		PrivateKey asn1.BitString
+	}
+	PublicKey asn1.BitString `asn1:"optional,explicit,tag:0"`
 }
 
 func parseMLKEM768PrivateKey(data []byte) (crypto.PrivateKey, error) {
@@ -576,7 +605,9 @@ func parseMLKEM768PrivateKey(data []byte) (crypto.PrivateKey, error) {
 	if _, err := asn1.Unmarshal(data, &info); err != nil {
 		return nil, errors.Wrap(err, "error unmarshalling ML-KEM-768 PKCS#8 private key")
 	}
-	priv, err := mlkem.NewDecapsulationKey768(info.PrivateKey.Bytes)
+	// The AlgorithmIdentifier.PrivateKey contains the encapsulation (public) key
+	// The outer PublicKey field contains the decapsulation (private) key
+	priv, err := mlkem.NewDecapsulationKey768(info.PublicKey.Bytes)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating ML-KEM-768 private key")
 	}
@@ -588,7 +619,9 @@ func parseMLKEM1024PrivateKey(data []byte) (crypto.PrivateKey, error) {
 	if _, err := asn1.Unmarshal(data, &info); err != nil {
 		return nil, errors.Wrap(err, "error unmarshalling ML-KEM-1024 PKCS#8 private key")
 	}
-	priv, err := mlkem.NewDecapsulationKey1024(info.PrivateKey.Bytes)
+	// The AlgorithmIdentifier.PrivateKey contains the encapsulation (public) key
+	// The outer PublicKey field contains the decapsulation (private) key
+	priv, err := mlkem.NewDecapsulationKey1024(info.PublicKey.Bytes)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating ML-KEM-1024 private key")
 	}
