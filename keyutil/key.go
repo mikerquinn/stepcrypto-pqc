@@ -294,9 +294,11 @@ func generateMLKEMKey(crv string) (interface{}, error) {
 	switch crv {
 	case "ML-KEM-768":
 		return mlkem.GenerateKey768()
+	case "ML-KEM-1024":
+		return mlkem.GenerateKey1024()
 	default:
 		return nil, errors.Errorf("missing or invalid value for argument 'crv'. "+
-			"expected 'ML-KEM-768', but got '%s'", crv)
+			"expected 'ML-KEM-768' or 'ML-KEM-1024', but got '%s'", crv)
 	}
 }
 
@@ -329,6 +331,30 @@ func (s *MlkemSigner) SignDeterministic(message []byte, opts crypto.SignerOpts) 
 	return ciphertext, nil
 }
 
+// Mlkem1024Signer wraps ML-KEM-1024 private keys to implement crypto.Signer
+type Mlkem1024Signer struct {
+	privateKey *mlkem.DecapsulationKey1024
+	publicKey  *mlkem.EncapsulationKey1024
+}
+
+func (s *Mlkem1024Signer) PrivateKey() *mlkem.DecapsulationKey1024 {
+	return s.privateKey
+}
+
+func (s *Mlkem1024Signer) Public() crypto.PublicKey {
+	return s.publicKey
+}
+
+func (s *Mlkem1024Signer) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	_, ciphertext := s.privateKey.EncapsulationKey().Encapsulate()
+	return ciphertext, nil
+}
+
+func (s *Mlkem1024Signer) SignDeterministic(message []byte, opts crypto.SignerOpts) ([]byte, error) {
+	_, ciphertext := s.privateKey.EncapsulationKey().Encapsulate()
+	return ciphertext, nil
+}
+
 func generateMLKEMSigner(crv string) (crypto.Signer, error) {
 	switch crv {
 	case "ML-KEM-768":
@@ -340,15 +366,25 @@ func generateMLKEMSigner(crv string) (crypto.Signer, error) {
 			privateKey: priv,
 			publicKey:  priv.EncapsulationKey(),
 		}, nil
+	case "ML-KEM-1024":
+		priv, err := mlkem.GenerateKey1024()
+		if err != nil {
+			return nil, errors.Wrap(err, "error generating ML-KEM-1024 key")
+		}
+		return &Mlkem1024Signer{
+			privateKey: priv,
+			publicKey:  priv.EncapsulationKey(),
+		}, nil
 	default:
 		return nil, errors.Errorf("missing or invalid value for argument 'crv'. "+
-			"expected 'ML-KEM-768', but got '%s'", crv)
+			"expected 'ML-KEM-768' or 'ML-KEM-1024', but got '%s'", crv)
 	}
 }
 
 // ML-KEM OID per RFC 9180 / FIPS 203
 var (
-	mlkem768OID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 44638, 2, 1, 1}
+	mlkem768OID   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 44638, 2, 1, 1}
+	mlkem1024OID  = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 44638, 2, 2, 1}
 )
 
 // PKIX structures for ML-KEM key encoding
@@ -360,6 +396,22 @@ type pkixAlgID struct {
 type spkiType struct {
 	AlgorithmIdentifier pkixAlgID
 	PublicKey           asn1.BitString
+}
+
+type pkixAlgID1024 struct {
+	Algorithm  asn1.ObjectIdentifier
+	Parameters asn1.RawValue `optional:"true"`
+}
+
+type pkixMLKEM1024PublicKey struct {
+	Algorithm        pkixAlgID1024
+	SubjectPublicKey asn1.BitString
+}
+
+type pkixMLKEM1024PrivateKey struct {
+	Version          int
+	PublicKey        pkixMLKEM1024PublicKey
+	PrivKey          asn1.BitString
 }
 
 // MarshalPKIXPublicKey manually encodes an ML-KEM public key in PKIX format
@@ -376,6 +428,20 @@ func MarshalPKIXPublicKeyMLKEM(pub *mlkem.EncapsulationKey768) ([]byte, error) {
 	}
 
 	return asn1.Marshal(keySpki)
+}
+
+// MarshalPKIXPublicKeyMLKEM1024 encodes an ML-KEM-1024 public key in PKIX format
+func MarshalPKIXPublicKeyMLKEM1024(pub *mlkem.EncapsulationKey1024) ([]byte, error) {
+	pubKeyBytes := pub.Bytes()
+	algID := pkixAlgID1024{
+		Algorithm:  mlkem1024OID,
+		Parameters: asn1.RawValue{},
+	}
+	pubKey := pkixMLKEM1024PublicKey{
+		Algorithm:        algID,
+		SubjectPublicKey: asn1.BitString{Bytes: pubKeyBytes, BitLength: len(pubKeyBytes) * 8},
+	}
+	return asn1.Marshal(pubKey)
 }
 
 // MarshalPKCS8PrivateKey marshals an ML-KEM private key in PKCS#8 format
@@ -399,6 +465,26 @@ func MarshalPKCS8PrivateKey(priv *mlkem.DecapsulationKey768) ([]byte, error) {
 	}
 
 	return asn1.Marshal(info)
+}
+
+// MarshalPKCS8PrivateKeyMLKEM1024 marshals an ML-KEM-1024 private key in PKCS#8 format
+func MarshalPKCS8PrivateKeyMLKEM1024(priv *mlkem.DecapsulationKey1024) ([]byte, error) {
+	pub := priv.EncapsulationKey()
+	pubKeyBytes := pub.Bytes()
+	privKeyBytes := priv.Bytes()
+	algID := pkixAlgID1024{
+		Algorithm:  mlkem1024OID,
+		Parameters: asn1.RawValue{},
+	}
+	privKey := pkixMLKEM1024PrivateKey{
+		Version: 0,
+		PublicKey: pkixMLKEM1024PublicKey{
+			Algorithm:        algID,
+			SubjectPublicKey: asn1.BitString{Bytes: pubKeyBytes, BitLength: len(pubKeyBytes) * 8},
+		},
+		PrivKey: asn1.BitString{Bytes: privKeyBytes, BitLength: len(privKeyBytes) * 8},
+	}
+	return asn1.Marshal(privKey)
 }
 
 // ParsePKCS8PrivateKey parses an ML-KEM private key in PKCS#8 format
@@ -442,6 +528,29 @@ func ParsePKCS8PrivateKey(data []byte) (crypto.PrivateKey, error) {
 		}
 	}
 
+	// Check for ML-KEM-1024 OID: 1.3.6.1.4.1.44638.2.2.1 (bytes: 2b 06 01 04 01 82 da c6 02 02 01)
+	mldkem1024OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xda, 0xc6, 0x02, 0x02, 0x01}
+	for i := range data {
+		if i+11 <= len(data) {
+			match := true
+			for j := 0; j < 11; j++ {
+				if data[i+j] != mldkem1024OID[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				var privKey pkixMLKEM1024PrivateKey
+				if _, err := asn1.Unmarshal(data[i:], &privKey); err == nil {
+					key, err := mlkem.NewDecapsulationKey1024(privKey.PrivKey.Bytes)
+					if err == nil {
+						return key, nil
+					}
+				}
+			}
+		}
+	}
+
 	// For non-ML-KEM keys (ML-DSA, RSA, EC, Ed25519), fall through to Go's parser
 	priv, err := x509.ParsePKCS8PrivateKey(data)
 	return priv, errors.Wrap(err, "error parsing PKCS#8 private key")
@@ -470,6 +579,18 @@ func ParsePKIXPublicKey(data []byte) (crypto.PublicKey, error) {
 			return nil, errors.Wrap(err, "error creating ML-KEM-768 public key")
 		}
 		return pubKey, nil
+	}
+
+	// Check for ML-KEM-1024 OID: 1.3.6.1.4.1.44638.2.2.1
+	mldkem1024OID := asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 44638, 2, 2, 1}
+	if spkiData.AlgorithmIdentifier.Algorithm.Equal(mldkem1024OID) {
+		var pubKey pkixMLKEM1024PublicKey
+		if _, err := asn1.Unmarshal(data, &pubKey); err == nil {
+			key, err := mlkem.NewEncapsulationKey1024(pubKey.SubjectPublicKey.Bytes)
+			if err == nil {
+				return key, nil
+			}
+		}
 	}
 
 	// Return the original error
