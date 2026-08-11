@@ -148,7 +148,8 @@ func ExtractKey(in interface{}) (interface{}, error) {
 		ed25519.PublicKey, ed25519.PrivateKey,
 		x25519.PublicKey, x25519.PrivateKey,
 		*mldsa.PublicKey, *mldsa.PrivateKey,
-		*mlkem.EncapsulationKey768, *mlkem.DecapsulationKey768:
+		*mlkem.EncapsulationKey768, *mlkem.DecapsulationKey768,
+		*mlkem.EncapsulationKey1024, *mlkem.DecapsulationKey1024:
 		return in, nil
 	case []byte:
 		return in, nil
