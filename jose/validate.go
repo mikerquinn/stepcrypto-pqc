@@ -218,6 +218,15 @@ func validateEncJWK(jwk *JSONWebKey) error {
 			return nil
 		}
 		kty = "MLKEM"
+	case *mlkem.DecapsulationKey1024, *mlkem.EncapsulationKey1024:
+		switch alg {
+		case ML_KEM_1024:
+			return nil
+		case "":
+			kty = "MLKEM"
+			return nil
+		}
+		kty = "MLKEM"
 	}
 
 	return errors.Errorf("alg '%s' is not compatible with kty '%s'", jwk.Algorithm, kty)
@@ -235,6 +244,8 @@ func validateGeneric(jwk *JSONWebKey) error {
 	case ed25519.PrivateKey, ed25519.PublicKey:
 		return nil
 	case *mlkem.DecapsulationKey768, *mlkem.EncapsulationKey768:
+		return nil
+	case *mlkem.DecapsulationKey1024, *mlkem.EncapsulationKey1024:
 		return nil
 	}
 

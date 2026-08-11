@@ -659,7 +659,27 @@ func Serialize(in interface{}, opts ...Options) (*pem.Block, error) {
 			Type:  "PUBLIC KEY",
 			Bytes: b,
 		}
+	case *mlkem.EncapsulationKey1024:
+		b, err := keyutil.MarshalPKIXPublicKeyMLKEM1024(k)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		p = &pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: b,
+		}
 	case *mlkem.DecapsulationKey768:
+		isPrivateKey = true
+		ctx.pkcs8 = true
+		b, err := x509.MarshalPKCS8PrivateKey(k)
+		if err != nil {
+			return nil, err
+		}
+		p = &pem.Block{
+			Type:  "PRIVATE KEY",
+			Bytes: b,
+		}
+	case *mlkem.DecapsulationKey1024:
 		isPrivateKey = true
 		ctx.pkcs8 = true
 		b, err := x509.MarshalPKCS8PrivateKey(k)
