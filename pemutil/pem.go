@@ -9,6 +9,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mlkem"
 	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
@@ -478,7 +479,7 @@ func Parse(b []byte, opts ...Options) (interface{}, error) {
 
 	switch block.Type {
 	case "PUBLIC KEY":
-		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+		pub, err := keyutil.ParsePKIXPublicKey(block.Bytes)
 		return pub, errors.Wrapf(err, "error parsing %s", ctx.filename)
 	case "RSA PRIVATE KEY":
 		priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
@@ -487,7 +488,7 @@ func Parse(b []byte, opts ...Options) (interface{}, error) {
 		priv, err := x509.ParseECPrivateKey(block.Bytes)
 		return priv, errors.Wrapf(err, "error parsing %s", ctx.filename)
 	case "PRIVATE KEY", "ENCRYPTED PRIVATE KEY":
-		priv, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		priv, err := keyutil.ParsePKCS8PrivateKey(block.Bytes)
 		return priv, errors.Wrapf(err, "error parsing %s", ctx.filename)
 	case "OPENSSH PRIVATE KEY":
 		priv, err := ParseOpenSSHPrivateKey(b, withContext(ctx))
@@ -646,6 +647,38 @@ func Serialize(in interface{}, opts ...Options) (*pem.Block, error) {
 		}
 		p = &pem.Block{
 			Type:  "PUBLIC KEY",
+			Bytes: b,
+		}
+	case *mlkem.EncapsulationKey768:
+		// Go's x509.MarshalPKIXPublicKey doesn't support ML-KEM yet
+		b, err := keyutil.MarshalPKIXPublicKeyMLKEM(k)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		p = &pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: b,
+		}
+	case *mlkem.DecapsulationKey768:
+		isPrivateKey = true
+		ctx.pkcs8 = true
+		b, err := x509.MarshalPKCS8PrivateKey(k)
+		if err != nil {
+			return nil, err
+		}
+		p = &pem.Block{
+			Type:  "PRIVATE KEY",
+			Bytes: b,
+		}
+	case *keyutil.MlkemSigner:
+		isPrivateKey = true
+		ctx.pkcs8 = true
+		b, err := keyutil.MarshalPKCS8PrivateKey(k.PrivateKey())
+		if err != nil {
+			return nil, err
+		}
+		p = &pem.Block{
+			Type:  "PRIVATE KEY",
 			Bytes: b,
 		}
 	case *x509.Certificate:

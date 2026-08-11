@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/mlkem"
 	"crypto/mldsa"
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // RFC 7515 - X.509 Certificate SHA-1 Thumbprint
@@ -207,6 +208,16 @@ func validateEncJWK(jwk *JSONWebKey) error {
 		kty = "EC"
 	case ed25519.PrivateKey, ed25519.PublicKey:
 		return errors.New("key Ed25519 cannot be used for encryption")
+	case *mlkem.DecapsulationKey768, *mlkem.EncapsulationKey768:
+		switch alg {
+		case ML_KEM_768:
+			return nil
+		case "":
+			// If algorithm is empty, check if the key type is MLKEM
+			kty = "MLKEM"
+			return nil
+		}
+		kty = "MLKEM"
 	}
 
 	return errors.Errorf("alg '%s' is not compatible with kty '%s'", jwk.Algorithm, kty)
@@ -222,6 +233,8 @@ func validateGeneric(jwk *JSONWebKey) error {
 	case *ecdsa.PrivateKey, *ecdsa.PublicKey:
 		return nil
 	case ed25519.PrivateKey, ed25519.PublicKey:
+		return nil
+	case *mlkem.DecapsulationKey768, *mlkem.EncapsulationKey768:
 		return nil
 	}
 

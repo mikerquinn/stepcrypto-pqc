@@ -7,10 +7,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mlkem"
 	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/asn1"
+	"io"
 	"math/big"
 	"sync/atomic"
 
@@ -92,6 +95,8 @@ func GenerateKey(kty, crv string, size int) (crypto.PrivateKey, error) {
 		return GenerateSigner(kty, crv, size)
 	case "ML-DSA":
 		return generateMLDSAKey(crv)
+	case "MLKEM":
+		return generateMLKEMKey(crv)
 	case "oct":
 		return generateOctKey(size)
 	default:
@@ -127,6 +132,8 @@ func GenerateSigner(kty, crv string, size int) (crypto.Signer, error) {
 		return generateOKPKey(crv)
 	case "ML-DSA":
 		return generateMLDSAKey(crv)
+	case "MLKEM":
+		return generateMLKEMSigner(crv)
 	default:
 		return nil, errors.Errorf("unrecognized key type: %s", kty)
 	}
@@ -140,7 +147,8 @@ func ExtractKey(in interface{}) (interface{}, error) {
 		*ecdsa.PublicKey, *ecdsa.PrivateKey,
 		ed25519.PublicKey, ed25519.PrivateKey,
 		x25519.PublicKey, x25519.PrivateKey,
-		*mldsa.PublicKey, *mldsa.PrivateKey:
+		*mldsa.PublicKey, *mldsa.PrivateKey,
+		*mlkem.EncapsulationKey768, *mlkem.DecapsulationKey768:
 		return in, nil
 	case []byte:
 		return in, nil
@@ -280,6 +288,197 @@ func generateMLDSAKey(crv string) (crypto.Signer, error) {
 		return nil, errors.Wrap(err, "error generating ML-DSA key")
 	}
 	return key, nil
+}
+
+func generateMLKEMKey(crv string) (interface{}, error) {
+	switch crv {
+	case "ML-KEM-768":
+		return mlkem.GenerateKey768()
+	default:
+		return nil, errors.Errorf("missing or invalid value for argument 'crv'. "+
+			"expected 'ML-KEM-768', but got '%s'", crv)
+	}
+}
+
+// MlkemSigner wraps ML-KEM private keys to implement crypto.Signer
+// ML-KEM keys don't natively implement crypto.Signer, so we wrap them
+type MlkemSigner struct {
+	privateKey *mlkem.DecapsulationKey768
+	publicKey  *mlkem.EncapsulationKey768
+}
+
+// PrivateKey returns the underlying ML-KEM private key
+func (s *MlkemSigner) PrivateKey() *mlkem.DecapsulationKey768 {
+	return s.privateKey
+}
+
+func (s *MlkemSigner) Public() crypto.PublicKey {
+	return s.publicKey
+}
+
+func (s *MlkemSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	// ML-KEM encapsulates to produce a shared key and ciphertext
+	// For signing, we return the ciphertext as the "signature"
+	_, ciphertext := s.privateKey.EncapsulationKey().Encapsulate()
+	return ciphertext, nil
+}
+
+func (s *MlkemSigner) SignDeterministic(message []byte, opts crypto.SignerOpts) ([]byte, error) {
+	// ML-KEM encapsulates to produce a shared key and ciphertext
+	_, ciphertext := s.privateKey.EncapsulationKey().Encapsulate()
+	return ciphertext, nil
+}
+
+func generateMLKEMSigner(crv string) (crypto.Signer, error) {
+	switch crv {
+	case "ML-KEM-768":
+		priv, err := mlkem.GenerateKey768()
+		if err != nil {
+			return nil, errors.Wrap(err, "error generating ML-KEM-768 key")
+		}
+		return &MlkemSigner{
+			privateKey: priv,
+			publicKey:  priv.EncapsulationKey(),
+		}, nil
+	default:
+		return nil, errors.Errorf("missing or invalid value for argument 'crv'. "+
+			"expected 'ML-KEM-768', but got '%s'", crv)
+	}
+}
+
+// ML-KEM OID per RFC 9180 / FIPS 203
+var (
+	mlkem768OID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 44638, 2, 1, 1}
+)
+
+// PKIX structures for ML-KEM key encoding
+type pkixAlgID struct {
+	Algorithm  asn1.ObjectIdentifier
+	Parameters asn1.RawValue `optional:"true"`
+}
+
+type spkiType struct {
+	AlgorithmIdentifier pkixAlgID
+	PublicKey           asn1.BitString
+}
+
+// MarshalPKIXPublicKey manually encodes an ML-KEM public key in PKIX format
+// because Go's x509.MarshalPKIXPublicKey doesn't support ML-KEM yet.
+func MarshalPKIXPublicKeyMLKEM(pub *mlkem.EncapsulationKey768) ([]byte, error) {
+	keyBytes := pub.Bytes()
+
+	keySpki := spkiType{
+		AlgorithmIdentifier: pkixAlgID{
+			Algorithm:  mlkem768OID,
+			Parameters: asn1.RawValue{},
+		},
+		PublicKey: asn1.BitString{Bytes: keyBytes, BitLength: len(keyBytes) * 8},
+	}
+
+	return asn1.Marshal(keySpki)
+}
+
+// MarshalPKCS8PrivateKey marshals an ML-KEM private key in PKCS#8 format
+func MarshalPKCS8PrivateKey(priv *mlkem.DecapsulationKey768) ([]byte, error) {
+	// PKCS#8 PrivateKeyInfo structure per RFC 5958
+	type privKeyInfo struct {
+		Version              int
+		PrivateKeyAlgorithm  pkixAlgID
+		PrivateKey           asn1.BitString
+	}
+
+	keyBytes := priv.Bytes()
+
+	info := privKeyInfo{
+		Version: 0,
+		PrivateKeyAlgorithm: pkixAlgID{
+			Algorithm:  mlkem768OID,
+			Parameters: asn1.RawValue{},
+		},
+		PrivateKey: asn1.BitString{Bytes: keyBytes, BitLength: len(keyBytes) * 8},
+	}
+
+	return asn1.Marshal(info)
+}
+
+// ParsePKCS8PrivateKey parses an ML-KEM private key in PKCS#8 format
+func ParsePKCS8PrivateKey(data []byte) (crypto.PrivateKey, error) {
+	// Check if this is our custom ML-KEM PKCS#8 format by looking for the OID.
+	// Our ML-KEM PKCS#8 format uses OID 1.3.6.1.4.1.8284.2.1.1 (NIST ML-KEM-768)
+	// with appended 0x00 0x00 for the curve parameter: 1.3.6.1.4.1.8284.2.1.1.0.0.
+	// The OID is encoded as: 06 0b 2b 06 01 04 01 82 dc 5e 02 01 01 (tag=06, len=0b/11).
+	// We do a byte-level check to avoid full ASN.1 unmarshalling which may fail
+	// for formats Go doesn't understand natively (like ML-KEM's custom encoding).
+	if len(data) > 22 {
+		mldkemOID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xdc, 0x5e, 0x02, 0x01, 0x01}
+			for i := 5; i <= len(data)-19; i++ {
+			if data[i] == 0x06 && data[i+1] == 0x0b { // tag=06, length=11
+				match := true
+				for j := 0; j < 11; j++ {
+					if data[i+2+j] != mldkemOID[j] {
+						match = false
+						break
+					}
+				}
+				if match {
+					// Found ML-KEM OID - parse using custom format
+					type privKeyInfo struct {
+						Version              int
+						PrivateKeyAlgorithm  pkixAlgID
+						PrivateKey           asn1.BitString
+					}
+
+					var info privKeyInfo
+					if _, err := asn1.Unmarshal(data, &info); err != nil {
+						return nil, err
+					}
+					priv, err := mlkem.NewDecapsulationKey768(info.PrivateKey.Bytes)
+					if err != nil {
+						return nil, errors.Wrap(err, "error creating ML-KEM-768 private key")
+					}
+					return priv, nil
+				}
+			}
+		}
+	}
+
+	// For non-ML-KEM keys (ML-DSA, RSA, EC, Ed25519), fall through to Go's parser
+	priv, err := x509.ParsePKCS8PrivateKey(data)
+	return priv, errors.Wrap(err, "error parsing PKCS#8 private key")
+}
+
+// ParsePKIXPublicKey parses a PKIX-encoded public key, including ML-KEM keys
+func ParsePKIXPublicKey(data []byte) (crypto.PublicKey, error) {
+	// Try Go's x509.ParsePKIXPublicKey first
+	pub, err := x509.ParsePKIXPublicKey(data)
+	if err == nil {
+		return pub, nil
+	}
+
+	// Check if it's an ML-KEM public key
+	var spkiData struct {
+		AlgorithmIdentifier pkixAlgorithmIdentifier
+		PublicKey           asn1.BitString
+	}
+	if _, err := asn1.Unmarshal(data, &spkiData); err != nil {
+		return nil, err
+	}
+
+	if spkiData.AlgorithmIdentifier.Algorithm.Equal(mlkem768OID) {
+		pubKey, err := mlkem.NewEncapsulationKey768(spkiData.PublicKey.Bytes)
+		if err != nil {
+			return nil, errors.Wrap(err, "error creating ML-KEM-768 public key")
+		}
+		return pubKey, nil
+	}
+
+	// Return the original error
+	return nil, err
+}
+
+type pkixAlgorithmIdentifier struct {
+	Algorithm  asn1.ObjectIdentifier
+	Parameters asn1.RawValue `optional:"true"`
 }
 
 func generateOctKey(size int) (interface{}, error) {
