@@ -61,12 +61,6 @@ type ContentType = jose.ContentType
 // KeyAlgorithm represents a key management algorithm.
 type KeyAlgorithm = jose.KeyAlgorithm
 
-// ML-KEM (FIPS 203) key encapsulation algorithms
-const (
-	ML_KEM_768  = jose.KeyAlgorithm("ML-KEM-768")  // ML-KEM-768 key encapsulation
-	ML_KEM_1024 = jose.KeyAlgorithm("ML-KEM-1024") // ML-KEM-1024 key encapsulation
-)
-
 // ContentEncryption represents a content encryption algorithm.
 type ContentEncryption = jose.ContentEncryption
 

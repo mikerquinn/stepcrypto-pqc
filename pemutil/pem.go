@@ -9,7 +9,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
-	"crypto/mlkem"
 	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
@@ -241,11 +240,11 @@ func ParseCertificate(pemData []byte) (*x509.Certificate, error) {
 			continue
 		}
 
-		cert, err := x509.ParseCertificate(block.Bytes)
+		crt, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
 			return nil, errors.Wrap(err, "error parsing certificate")
 		}
-		return cert, nil
+		return crt, nil
 	}
 
 	return nil, errors.New("error parsing certificate: no certificate found")
@@ -406,7 +405,7 @@ func ReadCertificate(filename string, opts ...Options) (*x509.Certificate, error
 	case len(bundle) == 0:
 		return nil, errors.Errorf("file %s does not contain a valid PEM or DER formatted certificate", filename)
 	case len(bundle) > 1 && !ctx.firstBlock:
-		return nil, errors.Errorf("error decoding %s: contains more than one PEM encoded block", filename)
+		return nil, errors.Errorf("error decoding %s: contains more than one PEM encoded block", ctx.filename)
 	default:
 		return bundle[0], nil
 	}
@@ -649,69 +648,6 @@ func Serialize(in interface{}, opts ...Options) (*pem.Block, error) {
 			Type:  "PUBLIC KEY",
 			Bytes: b,
 		}
-	case *mlkem.EncapsulationKey768:
-		// Go's x509.MarshalPKIXPublicKey doesn't support ML-KEM yet
-		b, err := keyutil.MarshalPKIXPublicKeyMLKEM(k)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-		p = &pem.Block{
-			Type:  "PUBLIC KEY",
-			Bytes: b,
-		}
-	case *mlkem.EncapsulationKey1024:
-		b, err := keyutil.MarshalPKIXPublicKeyMLKEM1024(k)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-		p = &pem.Block{
-			Type:  "PUBLIC KEY",
-			Bytes: b,
-		}
-	case *mlkem.DecapsulationKey768:
-		isPrivateKey = true
-		ctx.pkcs8 = true
-		b, err := x509.MarshalPKCS8PrivateKey(k)
-		if err != nil {
-			return nil, err
-		}
-		p = &pem.Block{
-			Type:  "PRIVATE KEY",
-			Bytes: b,
-		}
-	case *mlkem.DecapsulationKey1024:
-		isPrivateKey = true
-		ctx.pkcs8 = true
-		b, err := x509.MarshalPKCS8PrivateKey(k)
-		if err != nil {
-			return nil, err
-		}
-		p = &pem.Block{
-			Type:  "PRIVATE KEY",
-			Bytes: b,
-		}
-	case *keyutil.MlkemKeyPair:
-		isPrivateKey = true
-		ctx.pkcs8 = true
-		b, err := keyutil.MarshalPKCS8PrivateKey(k.DecapsulationKey)
-		if err != nil {
-			return nil, err
-		}
-		p = &pem.Block{
-			Type:  "PRIVATE KEY",
-			Bytes: b,
-		}
-	case *keyutil.Mlkem1024KeyPair:
-		isPrivateKey = true
-		ctx.pkcs8 = true
-		b, err := keyutil.MarshalPKCS8PrivateKeyMLKEM1024(k.DecapsulationKey)
-		if err != nil {
-			return nil, err
-		}
-		p = &pem.Block{
-			Type:  "PRIVATE KEY",
-			Bytes: b,
-		}
 	case *x509.Certificate:
 		p = &pem.Block{
 			Type:  "CERTIFICATE",
@@ -841,15 +777,15 @@ func ParseSSH(b []byte) (interface{}, error) {
 			return nil, errors.Errorf("unsupported ecdsa curve %s", w.Name)
 		}
 
-		var p *ecdh.PublicKey
-		if p, err = c.NewPublicKey(w.KeyBytes); err != nil {
+		pubKey, err := c.NewPublicKey(w.KeyBytes)
+		if err != nil {
 			return nil, errors.Wrapf(err, "failed decoding %s key", w.Name)
 		}
 
 		// convert ECDH public key to ECDSA public key to keep
 		// the returned type backwards compatible.
-		rawKey := p.Bytes()
-		switch p.Curve() {
+		rawKey := pubKey.Bytes()
+		switch pubKey.Curve() {
 		case ecdh.P256():
 			return &ecdsa.PublicKey{
 				Curve: elliptic.P256(),
