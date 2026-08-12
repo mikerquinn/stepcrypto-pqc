@@ -690,10 +690,10 @@ func Serialize(in interface{}, opts ...Options) (*pem.Block, error) {
 			Type:  "PRIVATE KEY",
 			Bytes: b,
 		}
-	case *keyutil.MlkemSigner:
+	case *keyutil.MlkemKeyPair:
 		isPrivateKey = true
 		ctx.pkcs8 = true
-		b, err := keyutil.MarshalPKCS8PrivateKey(k.PrivateKey())
+		b, err := keyutil.MarshalPKCS8PrivateKey(k.DecapsulationKey)
 		if err != nil {
 			return nil, err
 		}
@@ -701,10 +701,10 @@ func Serialize(in interface{}, opts ...Options) (*pem.Block, error) {
 			Type:  "PRIVATE KEY",
 			Bytes: b,
 		}
-	case *keyutil.Mlkem1024Signer:
+	case *keyutil.Mlkem1024KeyPair:
 		isPrivateKey = true
 		ctx.pkcs8 = true
-		b, err := keyutil.MarshalPKCS8PrivateKeyMLKEM1024(k.PrivateKey())
+		b, err := keyutil.MarshalPKCS8PrivateKeyMLKEM1024(k.DecapsulationKey)
 		if err != nil {
 			return nil, err
 		}

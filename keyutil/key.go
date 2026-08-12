@@ -13,7 +13,6 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/asn1"
-	"io"
 	"math/big"
 	"sync/atomic"
 
@@ -104,14 +103,52 @@ func GenerateKey(kty, crv string, size int) (crypto.PrivateKey, error) {
 	}
 }
 
-// GenerateKeyPair creates an asymmetric crypto keypair using input
-// configuration.
+// GenerateKeyPair creates an asymmetric crypto keypair using input configuration.
 func GenerateKeyPair(kty, crv string, size int) (crypto.PublicKey, crypto.PrivateKey, error) {
-	signer, err := GenerateSigner(kty, crv, size)
-	if err != nil {
-		return nil, nil, err
+	switch kty {
+	case "MLKEM":
+		return generateMLKEMKeyPair(kty, crv)
+	default:
+		signer, err := GenerateSigner(kty, crv, size)
+		if err != nil {
+			return nil, nil, err
+		}
+		return signer.Public(), signer, nil
 	}
-	return signer.Public(), signer, nil
+}
+
+// generateMLKEMKeyPair returns a non-signer ML-KEM key pair
+func generateMLKEMKeyPair(kty, crv string) (crypto.PublicKey, crypto.PrivateKey, error) {
+	switch crv {
+	case "ML-KEM-768":
+		return generateMLKEMKeyPair768()
+	case "ML-KEM-1024":
+		return generateMLKEMKeyPair1024()
+	default:
+		return nil, nil, errors.Errorf("unsupported ML-KEM curve: %s", crv)
+	}
+}
+
+func generateMLKEMKeyPair768() (*mlkem.EncapsulationKey768, *MlkemKeyPair, error) {
+	priv, err := mlkem.GenerateKey768()
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "error generating ML-KEM-768 key")
+	}
+	return priv.EncapsulationKey(), &MlkemKeyPair{
+		DecapsulationKey: priv,
+		EncapsulationKey: priv.EncapsulationKey(),
+	}, nil
+}
+
+func generateMLKEMKeyPair1024() (*mlkem.EncapsulationKey1024, *Mlkem1024KeyPair, error) {
+	priv, err := mlkem.GenerateKey1024()
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "error generating ML-KEM-1024 key")
+	}
+	return priv.EncapsulationKey(), &Mlkem1024KeyPair{
+		DecapsulationKey: priv,
+		EncapsulationKey: priv.EncapsulationKey(),
+	}, nil
 }
 
 // GenerateDefaultSigner returns an asymmetric crypto key that implements
@@ -121,7 +158,7 @@ func GenerateDefaultSigner() (crypto.Signer, error) {
 }
 
 // GenerateSigner creates an asymmetric crypto key that implements
-// crypto.Signer.
+// crypto.Signer. ML-KEM keys cannot sign (they are KEM keys only).
 func GenerateSigner(kty, crv string, size int) (crypto.Signer, error) {
 	switch kty {
 	case "EC":
@@ -133,7 +170,7 @@ func GenerateSigner(kty, crv string, size int) (crypto.Signer, error) {
 	case "ML-DSA":
 		return generateMLDSAKey(crv)
 	case "MLKEM":
-		return generateMLKEMSigner(crv)
+		return nil, errors.Errorf("ML-KEM keys cannot be used to sign; use ML-DSA or a classical algorithm")
 	default:
 		return nil, errors.Errorf("unrecognized key type: %s", kty)
 	}
@@ -167,10 +204,33 @@ func ExtractKey(in interface{}) (interface{}, error) {
 }
 
 // VerifyPair that the public key matches the given private key.
+// For ML-KEM keys, it checks that the encapsulation key matches.
 func VerifyPair(pub crypto.PublicKey, priv crypto.PrivateKey) error {
+	// Handle ML-KEM key pairs
+	switch kp := priv.(type) {
+	case *MlkemKeyPair:
+		yy, ok := pub.(*mlkem.EncapsulationKey768)
+		if !ok {
+			return errors.New("public key type does not match private key")
+		}
+		if !Equal(kp.EncapsulationKey, yy) {
+			return errors.New("private key does not match public key")
+		}
+		return nil
+	case *Mlkem1024KeyPair:
+		yy, ok := pub.(*mlkem.EncapsulationKey1024)
+		if !ok {
+			return errors.New("public key type does not match private key")
+		}
+		if !Equal(kp.EncapsulationKey, yy) {
+			return errors.New("private key does not match public key")
+		}
+		return nil
+	}
+	// For all other key types, use crypto.Signer interface
 	signer, ok := priv.(crypto.Signer)
 	if !ok {
-		return errors.New("private key type does implement crypto.Signer")
+		return errors.New("private key type does not implement crypto.Signer")
 	}
 	if !Equal(pub, signer.Public()) {
 		return errors.New("private key does not match public key")
@@ -205,10 +265,38 @@ func Equal(x, y any) bool {
 	case x25519.PrivateKey:
 		yy, ok := y.(x25519.PrivateKey)
 		return ok && xx.Equal(yy)
-	case *mldsa.PublicKey, mldsa.PublicKey:
-		return true
-	case *mldsa.PrivateKey, mldsa.PrivateKey:
-		return true
+	case *mldsa.PublicKey:
+		yy, ok := y.(*mldsa.PublicKey)
+		return ok && bytes.Equal(xx.Bytes(), yy.Bytes())
+	case mldsa.PublicKey:
+		yy, ok := y.(mldsa.PublicKey)
+		return ok && bytes.Equal(xx.Bytes(), yy.Bytes())
+	case *mldsa.PrivateKey:
+		yy, ok := y.(*mldsa.PrivateKey)
+		return ok && bytes.Equal(xx.Bytes(), yy.Bytes())
+	case mldsa.PrivateKey:
+		yy, ok := y.(mldsa.PrivateKey)
+		return ok && bytes.Equal(xx.Bytes(), yy.Bytes())
+	case *mlkem.EncapsulationKey768:
+		yy, ok := y.(*mlkem.EncapsulationKey768)
+		return ok && bytes.Equal(xx.Bytes(), yy.Bytes())
+	case *mlkem.DecapsulationKey768:
+		yy, ok := y.(*mlkem.DecapsulationKey768)
+		return ok && bytes.Equal(xx.Bytes(), yy.Bytes())
+	case *mlkem.EncapsulationKey1024:
+		yy, ok := y.(*mlkem.EncapsulationKey1024)
+		return ok && bytes.Equal(xx.Bytes(), yy.Bytes())
+	case *mlkem.DecapsulationKey1024:
+		yy, ok := y.(*mlkem.DecapsulationKey1024)
+		return ok && bytes.Equal(xx.Bytes(), yy.Bytes())
+	case *MlkemKeyPair:
+		yy, ok := y.(*MlkemKeyPair)
+		return ok && bytes.Equal(xx.EncapsulationKey.Bytes(), yy.EncapsulationKey.Bytes()) &&
+			bytes.Equal(xx.DecapsulationKey.Bytes(), yy.DecapsulationKey.Bytes())
+	case *Mlkem1024KeyPair:
+		yy, ok := y.(*Mlkem1024KeyPair)
+		return ok && bytes.Equal(xx.EncapsulationKey.Bytes(), yy.EncapsulationKey.Bytes()) &&
+			bytes.Equal(xx.DecapsulationKey.Bytes(), yy.DecapsulationKey.Bytes())
 	case []byte: // special case for symmetric keys
 		yy, ok := y.([]byte)
 		return ok && bytes.Equal(xx, yy)
@@ -294,87 +382,22 @@ func generateMLDSAKey(crv string) (crypto.Signer, error) {
 func generateMLKEMKey(crv string) (interface{}, error) {
 	switch crv {
 	case "ML-KEM-768":
-		return mlkem.GenerateKey768()
-	case "ML-KEM-1024":
-		return mlkem.GenerateKey1024()
-	default:
-		return nil, errors.Errorf("missing or invalid value for argument 'crv'. "+
-			"expected 'ML-KEM-768' or 'ML-KEM-1024', but got '%s'", crv)
-	}
-}
-
-// MlkemSigner wraps ML-KEM private keys to implement crypto.Signer
-// ML-KEM keys don't natively implement crypto.Signer, so we wrap them
-type MlkemSigner struct {
-	privateKey *mlkem.DecapsulationKey768
-	publicKey  *mlkem.EncapsulationKey768
-}
-
-// PrivateKey returns the underlying ML-KEM private key
-func (s *MlkemSigner) PrivateKey() *mlkem.DecapsulationKey768 {
-	return s.privateKey
-}
-
-func (s *MlkemSigner) Public() crypto.PublicKey {
-	return s.publicKey
-}
-
-func (s *MlkemSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	// ML-KEM encapsulates to produce a shared key and ciphertext
-	// For signing, we return the ciphertext as the "signature"
-	_, ciphertext := s.privateKey.EncapsulationKey().Encapsulate()
-	return ciphertext, nil
-}
-
-func (s *MlkemSigner) SignDeterministic(message []byte, opts crypto.SignerOpts) ([]byte, error) {
-	// ML-KEM encapsulates to produce a shared key and ciphertext
-	_, ciphertext := s.privateKey.EncapsulationKey().Encapsulate()
-	return ciphertext, nil
-}
-
-// Mlkem1024Signer wraps ML-KEM-1024 private keys to implement crypto.Signer
-type Mlkem1024Signer struct {
-	privateKey *mlkem.DecapsulationKey1024
-	publicKey  *mlkem.EncapsulationKey1024
-}
-
-func (s *Mlkem1024Signer) PrivateKey() *mlkem.DecapsulationKey1024 {
-	return s.privateKey
-}
-
-func (s *Mlkem1024Signer) Public() crypto.PublicKey {
-	return s.publicKey
-}
-
-func (s *Mlkem1024Signer) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	_, ciphertext := s.privateKey.EncapsulationKey().Encapsulate()
-	return ciphertext, nil
-}
-
-func (s *Mlkem1024Signer) SignDeterministic(message []byte, opts crypto.SignerOpts) ([]byte, error) {
-	_, ciphertext := s.privateKey.EncapsulationKey().Encapsulate()
-	return ciphertext, nil
-}
-
-func generateMLKEMSigner(crv string) (crypto.Signer, error) {
-	switch crv {
-	case "ML-KEM-768":
 		priv, err := mlkem.GenerateKey768()
 		if err != nil {
 			return nil, errors.Wrap(err, "error generating ML-KEM-768 key")
 		}
-		return &MlkemSigner{
-			privateKey: priv,
-			publicKey:  priv.EncapsulationKey(),
+		return &MlkemKeyPair{
+			DecapsulationKey: priv,
+			EncapsulationKey: priv.EncapsulationKey(),
 		}, nil
 	case "ML-KEM-1024":
 		priv, err := mlkem.GenerateKey1024()
 		if err != nil {
 			return nil, errors.Wrap(err, "error generating ML-KEM-1024 key")
 		}
-		return &Mlkem1024Signer{
-			privateKey: priv,
-			publicKey:  priv.EncapsulationKey(),
+		return &Mlkem1024KeyPair{
+			DecapsulationKey: priv,
+			EncapsulationKey: priv.EncapsulationKey(),
 		}, nil
 	default:
 		return nil, errors.Errorf("missing or invalid value for argument 'crv'. "+
@@ -382,10 +405,66 @@ func generateMLKEMSigner(crv string) (crypto.Signer, error) {
 	}
 }
 
-// ML-KEM OID per NIST (1.3.6.1.4.1.18284)
+// MlkemKeyPair wraps an ML-KEM-768 key pair
+type MlkemKeyPair struct {
+	EncapsulationKey *mlkem.EncapsulationKey768
+	DecapsulationKey *mlkem.DecapsulationKey768
+}
+
+func (p *MlkemKeyPair) Public() crypto.PublicKey {
+	return p.EncapsulationKey
+}
+
+func (p *MlkemKeyPair) Private() interface{} {
+	return p.DecapsulationKey
+}
+
+// Mlkem1024KeyPair wraps an ML-KEM-1024 key pair
+type Mlkem1024KeyPair struct {
+	EncapsulationKey *mlkem.EncapsulationKey1024
+	DecapsulationKey *mlkem.DecapsulationKey1024
+}
+
+func (p *Mlkem1024KeyPair) Public() crypto.PublicKey {
+	return p.EncapsulationKey
+}
+
+func (p *Mlkem1024KeyPair) Private() interface{} {
+	return p.DecapsulationKey
+}
+
+// GenerateMLKEMKeyPair returns an ML-KEM key pair (not a crypto.Signer)
+func GenerateMLKEMKeyPair(crv string) (*MlkemKeyPair, error) {
+	priv, err := mlkem.GenerateKey768()
+	if err != nil {
+		return nil, errors.Wrap(err, "error generating ML-KEM-768 key")
+	}
+	return &MlkemKeyPair{
+		DecapsulationKey: priv,
+		EncapsulationKey: priv.EncapsulationKey(),
+	}, nil
+}
+
+// GenerateMLKEM1024KeyPair returns an ML-KEM-1024 key pair (not a crypto.Signer)
+func GenerateMLKEM1024KeyPair(crv string) (*Mlkem1024KeyPair, error) {
+	priv, err := mlkem.GenerateKey1024()
+	if err != nil {
+		return nil, errors.Wrap(err, "error generating ML-KEM-1024 key")
+	}
+	return &Mlkem1024KeyPair{
+		DecapsulationKey: priv,
+		EncapsulationKey: priv.EncapsulationKey(),
+	}, nil
+}
+
+// ML-KEM OIDs per FIPS 203 / RFC 9448.
+// 2.16.840.1.101.3.4.4 is the NIST ML-KEM OID tree.
+//
+//	id-ML-KEM-768 (2.16.840.1.101.3.4.4.2)  – FIPS 203 level 3
+//	id-ML-KEM-1024 (2.16.840.1.101.3.4.4.3) – FIPS 203 level 4
 var (
-	mlkem768OID   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 18284, 2, 1, 1}
-	mlkem1024OID  = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 18284, 2, 2, 1}
+	mlkem768OID   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 4, 2}
+	mlkem1024OID  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 4, 3}
 )
 
 // PKIX structures for ML-KEM key encoding
@@ -527,16 +606,16 @@ func ParsePKCS8PrivateKey(data []byte) (crypto.PrivateKey, error) {
 		return nil, errors.New("empty data")
 	}
 
-	// ML-KEM-768 OID: 1.3.6.1.4.1.18284.2.1.1 = 2b 06 01 04 01 81 8e 6c 02 01 01
-	// ML-KEM-1024 OID: 1.3.6.1.4.1.18284.2.2.1 = 2b 06 01 04 01 81 8e 6c 02 02 01
-	// Enterprise number 18284 = base-128 [1,14,108] = 0x81 0x8e 0x6c
+	// ML-KEM-768 OID: 2.16.840.1.101.3.4.4.2 = 2b 06 01 04 01 a2 77 0d 03 04 02
+	// ML-KEM-1024 OID: 2.16.840.1.101.3.4.4.3 = 2b 06 01 04 01 a2 77 0d 03 04 03
+	// NIST ML-KEM OID tree 2.16.840.1.101.3.4.4
 	var detectedCurve string
 
 	// Search for ML-KEM OID in the data
 	for i := 5; i <= len(data)-13; i++ {
 		if data[i] == 0x06 && data[i+1] == 0x0b { // tag=06, length=11
 			// Check for ML-KEM-1024 OID first (more specific)
-			mldkem1024OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x81, 0x8e, 0x6c, 0x02, 0x02, 0x01}
+			mldkem1024OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0xa2, 0x77, 0x0d, 0x03, 0x04, 0x03}
 			match := true
 			for j := 0; j < 11; j++ {
 				if data[i+2+j] != mldkem1024OID[j] {
@@ -550,7 +629,7 @@ func ParsePKCS8PrivateKey(data []byte) (crypto.PrivateKey, error) {
 			}
 
 			// Check for ML-KEM-768 OID
-			mldkem768OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0x81, 0x8e, 0x6c, 0x02, 0x01, 0x01}
+			mldkem768OID := []byte{0x2b, 0x06, 0x01, 0x04, 0x01, 0xa2, 0x77, 0x0d, 0x03, 0x04, 0x02}
 			match = true
 			for j := 0; j < 11; j++ {
 				if data[i+2+j] != mldkem768OID[j] {
@@ -653,7 +732,7 @@ func ParsePKIXPublicKey(data []byte) (crypto.PublicKey, error) {
 		return pubKey, nil
 	}
 
-	// Check for ML-KEM-1024 OID: 1.3.6.1.4.1.18284.2.2.1
+	// Check for ML-KEM-1024 OID: 2.16.840.1.101.3.4.4.3
 	if spkiData.AlgorithmIdentifier.Algorithm.Equal(mlkem1024OID) {
 		var pubKey pkixMLKEM1024PublicKey
 		if _, err := asn1.Unmarshal(data, &pubKey); err == nil {
