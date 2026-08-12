@@ -108,5 +108,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-
-replace github.com/go-jose/go-jose/v3 => github.com/mikerquinn/go-jose-v3-pqc/v3 v3.0.5-pqc
+replace github.com/go-jose/go-jose/v3 => github.com/mikerquinn/go-jose-v3-pqc/v3 v0.0.0-20260812211412-dbe8c83f0916
